@@ -4,8 +4,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import Counter
 import matplotlib.pyplot as plt
 import nltk
+import numpy as np
 from nltk.corpus import stopwords
 from nltk.stem.snowball import SnowballStemmer
+from sklearn.metrics.pairwise import cosine_similarity
 
 LANG = "english"
 STOP_WORDS = None
@@ -69,13 +71,77 @@ def analyze_file(filename, num_processes):
 
 def analyze_multiple_files(filenames, num_processes=os.cpu_count()):
     combined, total_words, total_time = Counter(), 0, 0.0
+    # Lista pentru a salva counterele individuale pentru TF-IDF
+    file_counters = []
+
     for file in filenames:
         print(f"\nProcesam: {file}")
         count, words, _, elapsed = analyze_file(file, num_processes)
         combined.update(count)
+        file_counters.append(count)  # Salvam counterul individual
         total_words += words
         total_time += elapsed
-    return combined, total_words, len(combined), total_time
+
+    # Returnam si lista de countere individuale
+    return combined, total_words, len(combined), total_time, file_counters
+
+
+def calculate_and_plot_tfidf_cosine(file_counters, filenames):
+    print("\n--- Calcul TF-IDF si Distanta Cosinus ---")
+
+    # 1. Construire Vocabular Global
+    vocab = set()
+    for c in file_counters:
+        vocab.update(c.keys())
+    vocab_list = sorted(list(vocab))
+    word_to_idx = {word: i for i, word in enumerate(vocab_list)}
+
+    n_docs = len(file_counters)
+    n_vocab = len(vocab_list)
+
+    # 2. Matricea TF (Term Frequency)
+    tf_matrix = np.zeros((n_docs, n_vocab))
+    for i, counter in enumerate(file_counters):
+        total_terms_in_doc = sum(counter.values())
+        if total_terms_in_doc == 0: continue
+        for word, count in counter.items():
+            if word in word_to_idx:
+                # TF = (numar aparitii) / (total cuvinte in document)
+                tf_matrix[i, word_to_idx[word]] = count / total_terms_in_doc
+
+    # 3. Vectorul IDF (Inverse Document Frequency)
+    # IDF = log(N / (df + 1))
+    idf_vector = np.zeros(n_vocab)
+    for i, word in enumerate(vocab_list):
+        # Numarul de documente care contin cuvantul
+        doc_freq = sum(1 for c in file_counters if c[word] > 0)
+        idf_vector[i] = np.log((n_docs + 1) / (doc_freq + 1)) + 1
+
+    # 4. Matricea TF-IDF
+    tfidf_matrix = tf_matrix * idf_vector
+
+    # 5. Similitudinea Cosinus
+    cosine_sim = cosine_similarity(tfidf_matrix)
+
+    # 6. Plot Matrice
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cax = ax.matshow(cosine_sim, cmap="viridis")
+    fig.colorbar(cax)
+
+    # Etichete si valori
+    ax.set_xticks(range(n_docs))
+    ax.set_yticks(range(n_docs))
+    ax.set_xticklabels(filenames, rotation=45, ha="left")
+    ax.set_yticklabels(filenames)
+    ax.set_title("Matricea Similaritate Cosinus (TF-IDF)")
+
+    for i in range(n_docs):
+        for j in range(n_docs):
+            ax.text(j, i, f"{cosine_sim[i, j]:.2f}", ha="center", va="center",
+                    color="white" if cosine_sim[i, j] < 0.7 else "black")
+
+    plt.tight_layout()
+    plt.show()
 
 def plot_top_words(counts, top_n=10):
     if not counts:
@@ -116,13 +182,16 @@ if __name__ == "__main__":
 
     for n in process_counts:
         print(f"\nRulare cu {n} procese:")
-        _, _, _, elapsed = analyze_multiple_files(filenames, num_processes=n)
+        _, _, _, elapsed, _ = analyze_multiple_files(filenames, num_processes=n)
         times.append(elapsed)
         if base_time is None:
             base_time = elapsed
 
     plot_performance(process_counts, times, base_time)
 
-    final_count, _, _, _ = analyze_multiple_files(filenames, num_processes=max_procs // 2 or 1)
+    final_count, _, _, _, file_counters = analyze_multiple_files(filenames, num_processes=max_procs // 2 or 1)
     print("\nTop 10 cuvinte din toate fisierele:")
     plot_top_words(final_count, top_n=10)
+
+    if file_counters:
+        calculate_and_plot_tfidf_cosine(file_counters, filenames)
